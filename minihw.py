@@ -479,7 +479,7 @@ def _build_gcc(artifacts: Path, cwd: Path, suite: MiniHw, target: str = None) ->
         LOG.debug(f"[BUILD] GCC: {src} ~> {out}")
         gcc_res = execute_cmd(
             cmd=CMD_CC, args=[*CMD_CFLAGS, '-o', str(out), str(src), *LD_FLAGS],
-            cwd=cwd, ws=artifacts
+            cwd=cwd, ws=artifacts, nm=f"gcc-{out.name}"
         )
         if gcc_res.exit != 0:
             err_print_exec(f"gcc - {task.name} - {src.name}", gcc_res)
