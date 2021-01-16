@@ -3,6 +3,9 @@ image: gcc:latest
 stages:
   - test_them
 
+variables:
+  ARTIFACTS: "./_artifacts"
+
 build:
   stage: test_them
   tags:
@@ -15,9 +18,10 @@ build:
     - apt -y install cmake python3-pip
     - apt -y install wget
     - chmod +x run.sh
-    - ./run.sh
+    - bash ./run.sh $ARTIFACTS
 
   artifacts:
+    expire_in: 2 days
     paths: [./_artifacts]
     reports:
       junit: ./_artifacts/junit*.xml
