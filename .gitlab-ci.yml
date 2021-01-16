@@ -1,0 +1,23 @@
+image: gcc:latest
+
+stages:
+  - test_them
+
+build:
+  stage: test_them
+  tags:
+    - shared-fi
+  variables:
+    CC: gcc
+    CXX: g++
+  script:
+    - apt -y update
+    - apt -y install cmake python3-pip
+    - apt -y install wget
+    - chmod +x run.sh
+    - ./run.sh
+
+  artifacts:
+    paths: [./_artifacts]
+    reports:
+      junit: ./_artifacts/junit*.xml
