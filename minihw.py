@@ -319,7 +319,7 @@ class StdErrChecker(ContentChecker):
 #######
 
 def execute_mini(mini: 'MiniHw', artifacts: Path,
-                 mode: str = 'source', task_name: str=None) -> 'MiniHwResult':
+                 mode: str = 'source', task_name: str = None) -> 'MiniHwResult':
     result = MiniHwResult(mini)
     LOG.info(f"[EXEC] minihomework: {mini.name}, artifacts: {artifacts}, mode: {mode}")
     for task in mini.tasks:
@@ -470,12 +470,12 @@ def build_suite(suite, artifacts: Path, clean: bool = False, build: bool = False
         suite.build.mkdir()
     cwd = suite.build
     if build_type == 'cmake':
-        return _build_cmake(artifacts, cwd, suite)
+        return _build_cmake(artifacts, cwd, suite, target=target, task_name=task_name)
     else:
         return _build_gcc(artifacts, cwd, suite, target=target, task_name=task_name)
 
 
-def _build_gcc(artifacts: Path, cwd: Path, suite: MiniHw, target: str = None, task_name: str=None) -> bool:
+def _build_gcc(artifacts: Path, cwd: Path, suite: MiniHw, target: str = None, task_name: str = None) -> bool:
     # Execute gcc
     def _build(task, src: Path, out):
         LOG.debug(f"[BUILD] GCC: {src} ~> {out}")
@@ -491,7 +491,7 @@ def _build_gcc(artifacts: Path, cwd: Path, suite: MiniHw, target: str = None, ta
     for t in suite.tasks:
         if task_name and task_name != t.name:
             continue
-        
+
         bdir = t.exe_source.parent
         LOG.debug(f"[BUILD] Task: {t.name} (target: {target})")
         if not bdir.exists():
@@ -505,7 +505,7 @@ def _build_gcc(artifacts: Path, cwd: Path, suite: MiniHw, target: str = None, ta
     return True
 
 
-def _build_cmake(artifacts, cwd, suite):
+def _build_cmake(artifacts, cwd, suite, target: str = None, task_name: str = None):
     # Execute cmake
     cmake_res = execute_cmd(
         "cmake", args=[f'-B{cwd}', '-S', str(suite.path)], cwd=cwd, ws=artifacts
@@ -514,13 +514,35 @@ def _build_cmake(artifacts, cwd, suite):
         err_print_exec('cmake', cmake_res)
         return False
     # Execute make
+    #make_args = extract_make_help(cwd, target, task_name)
     make_res = execute_cmd(
-        "make", args=[], cwd=cwd, ws=artifacts
+        "make", args=['-k'], cwd=cwd, ws=artifacts
     )
     if make_res.exit != 0:
         err_print_exec('make', make_res)
-        return False
+        return True
     return True
+
+
+def extract_make_help(cwd, target, task_name):
+    make_help = subprocess.run(
+        ['make', 'help'],
+        cwd=cwd,
+        capture_output=True,
+    )
+    make_args = []
+    for line in make_help.stdout.decode(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line.startswith("..."):
+            continue
+        line = line[3:].strip()
+        if not line.endswith(target):
+            continue
+        if task_name and not line.startswith(task_name):
+            continue
+        make_args.append(line)
+    LOG.debug(f"Extracted args: {make_args}")
+    return make_args
 
 
 def err_print_exec(name, res):
@@ -672,20 +694,20 @@ def cli_exec(args):
     LOG.info(f"Executing the minihw ({path.name}) at location {path}; artifacts: {artifacts}")
     suite = MiniHw(path)
     if not build_suite(
-        suite,
-        artifacts=artifacts,
-        clean=args.clean,
-        build=args.build,
-        build_type=args.build_type,
-        target=args.target,
-        task_name=args.task):
+            suite,
+            artifacts=artifacts,
+            clean=args.clean,
+            build=args.build,
+            build_type=args.build_type,
+            target=args.target,
+            task_name=args.task):
         return False
     suite_res = execute_mini(
         suite,
         artifacts=artifacts,
         mode=args.target,
         task_name=args.task
-        )
+    )
     print_suite_result(suite_res)
     dump_junit_report(suite_res, artifacts)
     print(f"Overall status for {suite.name}: {suite_res}")
