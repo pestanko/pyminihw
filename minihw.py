@@ -318,13 +318,15 @@ class StdErrChecker(ContentChecker):
 # Execute
 #######
 
-def execute_mini(mini: 'MiniHw', artifacts: Path, mode: str = 'source') -> 'MiniHwResult':
+def execute_mini(mini: 'MiniHw', artifacts: Path,
+                 mode: str = 'source', task_name: str=None) -> 'MiniHwResult':
     result = MiniHwResult(mini)
     LOG.info(f"[EXEC] minihomework: {mini.name}, artifacts: {artifacts}, mode: {mode}")
     for task in mini.tasks:
-        result.tasks.append(
-            execute_task(task, artifacts, mode)
-        )
+        if not task_name or task.name == task_name:
+            result.tasks.append(
+                execute_task(task, artifacts, mode)
+            )
     return result
 
 
@@ -401,7 +403,7 @@ def _exec_case(executable: Path, case: Case, ws: Path) -> Optional[CommandResult
 
 
 def load_args(path: Path, name: str) -> List[str]:
-    file = path / f"{name}.arg"
+    file = path / f"{name}.args"
     return file.read_text().splitlines() if file.exists() else []
 
 
@@ -451,7 +453,7 @@ def execute_cmd(cmd: str, args: List[str], ws: Path, stdin: Optional[Path] = Non
 
 
 def build_suite(suite, artifacts: Path, clean: bool = False, build: bool = False,
-                build_type: str = 'cmake', target: str = None) -> bool:
+                build_type: str = 'cmake', target: str = None, task_name: str = None) -> bool:
     if suite.build.exists():
         if clean:
             LOG.info(f"[BUILD] Cleaning the build dir: {suite.build}")
@@ -470,10 +472,10 @@ def build_suite(suite, artifacts: Path, clean: bool = False, build: bool = False
     if build_type == 'cmake':
         return _build_cmake(artifacts, cwd, suite)
     else:
-        return _build_gcc(artifacts, cwd, suite, target=target)
+        return _build_gcc(artifacts, cwd, suite, target=target, task_name=task_name)
 
 
-def _build_gcc(artifacts: Path, cwd: Path, suite: MiniHw, target: str = None) -> bool:
+def _build_gcc(artifacts: Path, cwd: Path, suite: MiniHw, target: str = None, task_name: str=None) -> bool:
     # Execute gcc
     def _build(task, src: Path, out):
         LOG.debug(f"[BUILD] GCC: {src} ~> {out}")
@@ -487,6 +489,9 @@ def _build_gcc(artifacts: Path, cwd: Path, suite: MiniHw, target: str = None) ->
         return True
 
     for t in suite.tasks:
+        if task_name and task_name != t.name:
+            continue
+        
         bdir = t.exe_source.parent
         LOG.debug(f"[BUILD] Task: {t.name} (target: {target})")
         if not bdir.exists():
@@ -573,7 +578,7 @@ def dump_junit_report(suite_res: 'MiniHwResult', artifacts: Path):
                     jcase.system_out = str(case.cmd_result.stdout)
                     jcase.system_err = str(case.cmd_result.stderr)
             elif case.result == case.SKIP:
-                jcase.result = junitparser.Skipped()
+                jcase.result = [junitparser.Skipped()]
             jsuite.add_testcase(jcase)
         suites.add_testsuite(jsuite)
     suites.write(str(reportpath))
@@ -639,6 +644,7 @@ def parse_cli_args():
     sub_exe.add_argument('-B', "--build", action="store_true", help="Build the solution if not built", default=False)
     sub_exe.add_argument("-A", "--artifacts", type=str, help="Artifacts directory", default=None)
     sub_exe.add_argument("-T", "--target", type=str, help="Target to exec (source|solution)", default='source')
+    sub_exe.add_argument("-t", "--task", type=str, help="Select task to be executed", default=None)
     sub_exe.add_argument('--build-type', type=str, help="Build type (cmake|gcc)", default='cmake')
     sub_exe.set_defaults(func=cli_exec)
     return parser
@@ -665,10 +671,21 @@ def cli_exec(args):
     artifacts = get_artifacts(args.artifacts)
     LOG.info(f"Executing the minihw ({path.name}) at location {path}; artifacts: {artifacts}")
     suite = MiniHw(path)
-    if not build_suite(suite, artifacts=artifacts, clean=args.clean, build=args.build,
-                       build_type=args.build_type, target=args.target):
+    if not build_suite(
+        suite,
+        artifacts=artifacts,
+        clean=args.clean,
+        build=args.build,
+        build_type=args.build_type,
+        target=args.target,
+        task_name=args.task):
         return False
-    suite_res = execute_mini(suite, artifacts=artifacts, mode=args.target)
+    suite_res = execute_mini(
+        suite,
+        artifacts=artifacts,
+        mode=args.target,
+        task_name=args.task
+        )
     print_suite_result(suite_res)
     dump_junit_report(suite_res, artifacts)
     print(f"Overall status for {suite.name}: {suite_res}")
