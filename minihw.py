@@ -6,8 +6,9 @@ import logging
 import os
 import tempfile
 import time
+import enum
 
-from typing import List, Dict, Set, Optional, Any
+from typing import Callable, List, Dict, Set, Optional, Any, TypeVar
 from pathlib import Path
 
 LOG = logging.getLogger("minihw")
@@ -119,64 +120,97 @@ class Case:
         return self.task.path / f"{self.name}.{ext}"
 
 
-class MiniHwResult:
-    PASS = 'pass'
-    FAIL = 'fail'
-
-    def __init__(self, minihw: 'MiniHw'):
-        self.minihw: 'MiniHw' = minihw
-        self.tasks: List['TaskResult'] = []
-
-    @property
-    def result(self) -> str:
-        for task in self.tasks:
-            if task.is_fail():
-                return self.FAIL
-        return self.PASS
-
-    def is_fail(self) -> bool:
-        return self.result == self.FAIL
-
-    def is_pass(self) -> bool:
-        return self.result == self.PASS
-
-    def __str__(self) -> str:
-        return f"[{self.result.upper()}] {'/'.join(self.minihw.namespace)} tasks: {len(self.tasks)}"
-
-
-class TaskResult:
-    PASS = 'pass'
-    FAIL = 'fail'
-
-    def __init__(self, task: 'Task'):
-        self.task: 'Task' = task
-        self.cases: List['CaseResult'] = []
-
-    @property
-    def result(self) -> str:
-        for case in self.cases:
-            if case.is_fail():
-                return self.FAIL
-        return self.PASS
-
-    def is_fail(self) -> bool:
-        return self.result == self.FAIL
-
-    def is_pass(self) -> bool:
-        return self.result == self.PASS
-
-    def __str__(self) -> str:
-        return f"[{self.result.upper()}] {'/'.join(self.task.namespace)} cases: {len(self.cases)}"
-
-
-class CaseResult:
+class ResultKind(enum.Enum):
     PASS = 'pass'
     FAIL = 'fail'
     SKIP = 'skip'
 
-    def __init__(self, case: 'Case', result: str = PASS, cmd_result=None):
+    def is_pass(self) -> bool:
+        return self == self.PASS
+
+    def is_fail(self) -> bool:
+        return self == self.FAIL
+
+    def is_skip(self) -> bool:
+        return self == self.SKIP
+
+    def fmt(self, fmt) -> str:
+        return fmt(str(self)) if fmt else str(self)
+
+    def __str__(self) -> str:
+        return self.value.upper()
+
+
+class _AnyResult:
+    def __init__(self, result: 'ResultKind' = 'pass'):
+        self._result: ResultKind = result
+
+    def is_pass(self) -> bool:
+        return self.result == ResultKind.PASS
+
+    def is_fail(self) -> bool:
+        return self.result == ResultKind.FAIL
+
+    def is_skip(self) -> bool:
+        return self.result == ResultKind.SKIP
+
+    @property
+    def result(self) -> ResultKind:
+        return self._result
+
+    def __str__(self) -> str:
+        return self.fmt_str(None)
+
+    def fmt_str(self, fmt=None) -> str:
+        return self.res_str(fmt) + " " + self.info_str()
+
+
+    def res_str(self, fmt: Callable[[str], str] = None) -> str:
+        fmt = fmt if fmt else str
+        return fmt(f"[{self.result}]")
+
+    def info_str(self) -> str:
+        return ""
+
+
+class MiniHwResult(_AnyResult):
+    def __init__(self, minihw: 'MiniHw'):
+        super().__init__()
+        self.minihw: 'MiniHw' = minihw
+        self.tasks: List['TaskResult'] = []
+
+    @property
+    def result(self) -> ResultKind:
+        for task in self.tasks:
+            if task.is_fail():
+                return ResultKind.FAIL
+        return ResultKind.PASS
+
+    def info_str(self) -> str:
+        return f"{self.minihw.name} (tasks: {len(self.tasks)})"
+
+
+class TaskResult(_AnyResult):
+    def __init__(self, task: 'Task'):
+        super().__init__()
+        self.task: 'Task' = task
+        self.cases: List['CaseResult'] = []
+
+    @property
+    def result(self) -> ResultKind:
+        for case in self.cases:
+            if case.is_fail():
+                return ResultKind.FAIL
+        return ResultKind.PASS
+
+    def info_str(self) -> str:
+        return f"{self.task.name} (cases: {len(self.cases)})"
+
+
+class CaseResult(_AnyResult):
+    def __init__(self, case: 'Case', result: ResultKind = ResultKind.PASS, cmd_result=None):
+        super().__init__(result=result)
         self.case: 'Case' = case
-        self.result: str = result
         self.cmd_result: 'CommandResult' = cmd_result
         self.checks: Dict[str, 'CheckResult'] = {}
 
@@ -184,18 +218,11 @@ class CaseResult:
         res = checker.check(msg)
         LOG.debug(f"Check[{res.is_pass}]: {res}")
         if not res.is_pass:
-            self.result = self.FAIL
+            self._result = ResultKind.FAIL
         self.checks[checker.name()] = res
 
-    def is_fail(self) -> bool:
-        return self.result == self.FAIL
-
-    def is_pass(self) -> bool:
-        return self.result == self.PASS
-
-    def __str__(self) -> str:
-        return f"[{self.result.upper()}] {'/'.join(self.case.namespace)} checks: {len(self.checks)}"
-
+    def info_str(self) -> str:
+        return f"{self.case.name} (checks: {len(self.checks)})"
     def message(self) -> str:
         res = []
         for check in self.checks.values():
@@ -220,7 +247,7 @@ class CheckResult:
 
     @property
     def result(self) -> str:
-        return 'PASS' if self.is_pass else 'FAIL'
+        return self.__class__.PASS if self.is_pass else self.__class__.FAIL
 
     @property
     def is_fail(self) -> bool:
@@ -319,18 +346,19 @@ class StdErrChecker(ContentChecker):
 #######
 
 def execute_mini(mini: 'MiniHw', artifacts: Path,
-                 mode: str = 'source', task_name: str = None) -> 'MiniHwResult':
+                 mode: str = 'source', task_name: str = None, no_skip: bool = False) -> 'MiniHwResult':
     result = MiniHwResult(mini)
-    LOG.info(f"[EXEC] minihomework: {mini.name}, artifacts: {artifacts}, mode: {mode}")
+    LOG.info(
+        f"[EXEC] minihomework: {mini.name}, artifacts: {artifacts}, mode: {mode}")
     for task in mini.tasks:
         if not task_name or task.name == task_name:
             result.tasks.append(
-                execute_task(task, artifacts, mode)
+                execute_task(task, artifacts, mode, no_skip=no_skip)
             )
     return result
 
 
-def execute_task(task: 'Task', artifacts: Path, mode: str = 'source') -> 'TaskResult':
+def execute_task(task: 'Task', artifacts: Path, mode: str = 'source', no_skip: bool = False) -> 'TaskResult':
     LOG.info(f"[EXEC] task: {task.name}")
     artifacts_task = artifacts / Path(*task.namespace)
     if artifacts_task.exists():
@@ -339,7 +367,8 @@ def execute_task(task: 'Task', artifacts: Path, mode: str = 'source') -> 'TaskRe
     result = TaskResult(task)
 
     for case in task.cases:
-        case_result = execute_case(case, ws=artifacts_task, mode=mode)
+        case_result = execute_case(
+            case, ws=artifacts_task, mode=mode, no_skip=no_skip)
         _log = LOG.debug if not case_result.is_fail() else LOG.error
         _log(f"Case {case.name} result[{case_result.result}]: {case_result}")
         result.cases.append(case_result)
@@ -347,15 +376,16 @@ def execute_task(task: 'Task', artifacts: Path, mode: str = 'source') -> 'TaskRe
     return result
 
 
-def execute_case(case: 'Case', ws: Path, mode: str) -> 'CaseResult':
+def execute_case(case: 'Case', ws: Path, mode: str, no_skip: bool = False) -> 'CaseResult':
     LOG.info(f"[EXEC] case: {case.name}, ws: {ws}")
     exe = case.task.exe_source if mode == 'source' else case.task.exe_solution
     exec_result = _exec_case(exe, case, ws)
     if not exec_result:
-        return CaseResult(case, CaseResult.SKIP)
+        return CaseResult(case, ResultKind.FAIL if no_skip else ResultKind.SKIP)
 
     result = CaseResult(case, cmd_result=exec_result)
-    result.check(ExitValueChecker(exec_result.exit, 0), "Program exited with non-zero value")
+    result.check(ExitValueChecker(exec_result.exit, 0),
+                 "Program exited with non-zero value")
 
     if case.stdout.exists():
         result.check(StdOutChecker(exec_result.stdout, case.stdout, ws=ws))
@@ -459,7 +489,8 @@ def build_suite(suite, artifacts: Path, clean: bool = False, build: bool = False
             LOG.info(f"[BUILD] Cleaning the build dir: {suite.build}")
             shutil.rmtree(suite.build)
         else:
-            LOG.info(f"[BUILD] Build dir already exists, no clean mode: {suite.build}")
+            LOG.info(
+                f"[BUILD] Build dir already exists, no clean mode: {suite.build}")
             return True
 
     if not suite.build.exists():
@@ -480,7 +511,8 @@ def _build_gcc(artifacts: Path, cwd: Path, suite: MiniHw, target: str = None, ta
     def _build(task, src: Path, out):
         LOG.debug(f"[BUILD] GCC: {src} ~> {out}")
         gcc_res = execute_cmd(
-            cmd=CMD_CC, args=[*CMD_CFLAGS, '-o', str(out), str(src), *LD_FLAGS],
+            cmd=CMD_CC, args=[*CMD_CFLAGS, '-o',
+                              str(out), str(src), *LD_FLAGS],
             cwd=cwd, ws=artifacts, nm=f"gcc-{out.name}"
         )
         if gcc_res.exit != 0:
@@ -565,16 +597,81 @@ def print_suite(suite: 'MiniHw'):
                     print(f"  \t{nm.capitalize()}: {pth}")
 
 
-def print_suite_result(suite_res: 'MiniHwResult'):
-    print(f"{suite_res}")
+class tcolors:
+    HEADER = '\033[95m'
+    OKBLUE = '\033[94m'
+    OKCYAN = '\033[96m'
+    OKGREEN = '\033[92m'
+    WARNING = '\033[93m'
+    FAIL = '\033[91m'
+    ENDC = '\033[0m'
+    BOLD = '\033[1m'
+    UNDERLINE = '\033[4m'
+
+    @classmethod
+    def fail(cls, s: str) -> str:
+        return cls._t(cls.FAIL, s)
+
+    @classmethod
+    def passed(cls, s: str) -> str:
+        return cls._t(cls.OKGREEN, s)
+
+    @classmethod
+    def warn(cls, s: str) -> str:
+        return cls._t(cls.WARNING, s)
+
+    @classmethod
+    def head(cls, s: str) -> str:
+        return cls._t(cls.HEADER, s)
+
+    @classmethod
+    def _t(cls, c: str, s: str) -> str:
+        return f"{c}{s}{cls.ENDC}"
+
+
+def _result_fmt(res: '_AnyResult', colored: bool = True) -> str:
+    if not colored:
+        return str(res)
+
+    formatter = tcolors.passed
+
+    if res.is_fail():
+        formatter = tcolors.fail
+    if res.is_skip():
+        formatter = tcolors.warn
+    return res.fmt_str(formatter)
+
+
+def print_suite_result(suite_res: 'MiniHwResult', colored: bool = True):
+    def _f(x): return _result_fmt(x, colored=colored)
+    print(_f(suite_res))
+    passed_tasks = 0
     for task in suite_res.tasks:
-        print(f"- {task}")
+        print(f"- {_f(task)}")
+        if task.is_pass():
+            passed_tasks += 1
         for case in task.cases:
-            print(f"\t* {case}")
+            print(f"\t* {_f(case)}")
             for check in case.checks.values():
                 if check.is_fail:
-                    print(f"\t\t > {check}")
+                    print(f"\t\t > {_f(check)}")
                     print(check.fail_msg())
+
+    print(f"\n>>> OVERALL RESULT: {_get_result(suite_res, colored)} (passed {passed_tasks} out of {len(suite_res.tasks)} total tasks)")
+
+def _get_result(res: '_AnyResult', colored: bool):
+    if not colored:
+        return str(res)
+
+    if res.is_fail():
+        return tcolors.fail("FAIL")
+
+    if res.is_skip():
+        return tcolors.warn("SKIP")
+    
+    return tcolors.passed("PASS")
+
+        
 
 
 def dump_junit_report(suite_res: 'MiniHwResult', artifacts: Path):
@@ -595,11 +692,12 @@ def dump_junit_report(suite_res: 'MiniHwResult', artifacts: Path):
                 time=case.cmd_result.elapsed / 1000000.0 if case.cmd_result else 0
             )
             if case.is_fail():
-                jcase.result = [junitparser.Failure(c.fail_msg()) for c in case.checks.values() if c.is_fail]
+                jcase.result = [junitparser.Failure(
+                    c.fail_msg()) for c in case.checks.values() if c.is_fail]
                 if case.cmd_result:
                     jcase.system_out = str(case.cmd_result.stdout)
                     jcase.system_err = str(case.cmd_result.stderr)
-            elif case.result == case.SKIP:
+            elif case.is_skip():
                 jcase.result = [junitparser.Skipped()]
             jsuite.add_testcase(jcase)
         suites.add_testsuite(jsuite)
@@ -645,29 +743,46 @@ def _load_logger(level: str = 'INFO'):
 def parse_cli_args():
     parser = argparse.ArgumentParser("minihw")
     parser.set_defaults(func=None)
-    parser.add_argument("-L", "--log-level", type=str, help="Set log level (DEBUG|INFO|WARNING|ERROR)", default='ERROR')
+    parser.add_argument("-L", "--log-level", type=str,
+                        help="Set log level (DEBUG|INFO|WARNING|ERROR)", default='ERROR')
     sub = parser.add_subparsers(title="Sub-Commands")
     # parse
-    sub_parse = sub.add_parser("parse", help="Parse and print the mini hw scenario")
-    sub_parse.add_argument('location', type=str, help='Location of the mini homework', default='.')
+    sub_parse = sub.add_parser(
+        "parse", help="Parse and print the mini hw scenario")
+    sub_parse.add_argument('location', type=str,
+                           help='Location of the mini homework', default='.')
     sub_parse.set_defaults(func=cli_parse)
     # build
     sub_build = sub.add_parser("build", help="Build the minihomework")
-    sub_build.add_argument('location', type=str, help='Location of the mini homework', default='.')
-    sub_build.add_argument('-C', "--clean", action="store_true", help="Clean the build dir", default=False)
-    sub_build.add_argument("-A", "--artifacts", type=str, help="Artifacts directory", default=None)
-    sub_build.add_argument("-T", "--target", type=str, help="Target to build (source|solution|both)", default=None)
-    sub_build.add_argument('--build-type', type=str, help="Build type (cmake|gcc)", default='cmake')
+    sub_build.add_argument('location', type=str,
+                           help='Location of the mini homework', default='.')
+    sub_build.add_argument('-C', "--clean", action="store_true",
+                           help="Clean the build dir", default=False)
+    sub_build.add_argument("-A", "--artifacts", type=str,
+                           help="Artifacts directory", default=None)
+    sub_build.add_argument("-T", "--target", type=str,
+                           help="Target to build (source|solution|both)", default=None)
+    sub_build.add_argument('--build-type', type=str,
+                           help="Build type (cmake|gcc)", default='cmake')
     sub_build.set_defaults(func=cli_build)
     # execute
     sub_exe = sub.add_parser("execute", help="Execute the minihomework")
-    sub_exe.add_argument('location', type=str, help='Location of the mini homework', default='.')
-    sub_exe.add_argument('-C', "--clean", action="store_true", help="Clean the build dir", default=False)
-    sub_exe.add_argument('-B', "--build", action="store_true", help="Build the solution if not built", default=False)
-    sub_exe.add_argument("-A", "--artifacts", type=str, help="Artifacts directory", default=None)
-    sub_exe.add_argument("-T", "--target", type=str, help="Target to exec (source|solution)", default='source')
-    sub_exe.add_argument("-t", "--task", type=str, help="Select task to be executed", default=None)
-    sub_exe.add_argument('--build-type', type=str, help="Build type (cmake|gcc)", default='cmake')
+    sub_exe.add_argument('location', type=str,
+                         help='Location of the mini homework', default='.')
+    sub_exe.add_argument('-C', "--clean", action="store_true",
+                         help="Clean the build dir", default=False)
+    sub_exe.add_argument('-B', "--build", action="store_true",
+                         help="Build the solution if not built", default=False)
+    sub_exe.add_argument("-A", "--artifacts", type=str,
+                         help="Artifacts directory", default=None)
+    sub_exe.add_argument("-T", "--target", type=str,
+                         help="Target to exec (source|solution)", default='source')
+    sub_exe.add_argument("-t", "--task", type=str,
+                         help="Select task to be executed", default=None)
+    sub_exe.add_argument('--build-type', type=str,
+                         help="Build type (cmake|gcc)", default='cmake')    
+    sub_exe.add_argument('--no-color', action='store_true',
+                         help="Disable colored output", default=False)
     sub_exe.set_defaults(func=cli_exec)
     return parser
 
@@ -683,7 +798,8 @@ def cli_parse(args):
 def cli_build(args):
     path = Path(args.location).resolve()
     artifacts = get_artifacts(args.artifacts)
-    LOG.info(f"Building the minihw ({path.name}) at location {path}; artifacts: {artifacts}")
+    LOG.info(
+        f"Building the minihw ({path.name}) at location {path}; artifacts: {artifacts}")
     suite = MiniHw(path)
     return build_suite(suite, clean=args.clean, build=True, artifacts=artifacts, build_type=args.build_type)
 
@@ -691,7 +807,8 @@ def cli_build(args):
 def cli_exec(args):
     path = Path(args.location).resolve()
     artifacts = get_artifacts(args.artifacts)
-    LOG.info(f"Executing the minihw ({path.name}) at location {path}; artifacts: {artifacts}")
+    LOG.info(
+        f"Executing the minihw ({path.name}) at location {path}; artifacts: {artifacts}")
     suite = MiniHw(path)
     if not build_suite(
             suite,
@@ -706,11 +823,12 @@ def cli_exec(args):
         suite,
         artifacts=artifacts,
         mode=args.target,
-        task_name=args.task
+        task_name=args.task,
+        no_skip=True,
     )
-    print_suite_result(suite_res)
+    print()
+    print_suite_result(suite_res, colored = not args.no_color)
     dump_junit_report(suite_res, artifacts)
-    print(f"Overall status for {suite.name}: {suite_res}")
     return True
 
 
