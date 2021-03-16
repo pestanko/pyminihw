@@ -654,7 +654,6 @@ def print_suite_result(suite_res: 'MiniHwResult', colored: bool = True):
             print(f"\t* {_f(case)}")
             for check in case.checks.values():
                 if check.is_fail:
-                    print(f"\t\t > {_f(check)}")
                     print(check.fail_msg())
 
     print(f"\n>>> OVERALL RESULT: {_get_result(suite_res, colored)} (passed {passed_tasks} out of {len(suite_res.tasks)} total tasks)")
