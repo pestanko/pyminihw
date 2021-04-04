@@ -8,10 +8,12 @@ import tempfile
 import time
 import enum
 
-from typing import Callable, List, Dict, Set, Optional, Any, TypeVar
+from typing import Callable, List, Dict, Set, Optional, Any
 from pathlib import Path
 
-LOG = logging.getLogger("minihw")
+APP_NAME = "minihw"
+
+LOG = logging.getLogger(APP_NAME)
 
 EXCLUDED_TASKS = ['template', '.git', 'build']
 GLOBAL_TIMEOUT = 10 * 60
@@ -164,7 +166,6 @@ class _AnyResult:
     def fmt_str(self, fmt=None) -> str:
         return self.res_str(fmt) + " " + self.info_str()
 
-
     def res_str(self, fmt: Callable[[str], str] = None) -> str:
         fmt = fmt if fmt else str
         return fmt(f"[{self.result}]")
@@ -223,6 +224,7 @@ class CaseResult(_AnyResult):
 
     def info_str(self) -> str:
         return f"{self.case.name} (checks: {len(self.checks)})"
+
     def message(self) -> str:
         res = []
         for check in self.checks.values():
@@ -346,7 +348,8 @@ class StdErrChecker(ContentChecker):
 #######
 
 def execute_mini(mini: 'MiniHw', artifacts: Path,
-                 mode: str = 'source', task_name: str = None, no_skip: bool = False) -> 'MiniHwResult':
+                 mode: str = 'source', task_name: str = None,
+                 no_skip: bool = False) -> 'MiniHwResult':
     result = MiniHwResult(mini)
     LOG.info(
         f"[EXEC] minihomework: {mini.name}, artifacts: {artifacts}, mode: {mode}")
@@ -358,7 +361,8 @@ def execute_mini(mini: 'MiniHw', artifacts: Path,
     return result
 
 
-def execute_task(task: 'Task', artifacts: Path, mode: str = 'source', no_skip: bool = False) -> 'TaskResult':
+def execute_task(task: 'Task', artifacts: Path, mode: str = 'source',
+                 no_skip: bool = False) -> 'TaskResult':
     LOG.info(f"[EXEC] task: {task.name}")
     artifacts_task = artifacts / Path(*task.namespace)
     if artifacts_task.exists():
@@ -506,7 +510,8 @@ def build_suite(suite, artifacts: Path, clean: bool = False, build: bool = False
         return _build_gcc(artifacts, cwd, suite, target=target, task_name=task_name)
 
 
-def _build_gcc(artifacts: Path, cwd: Path, suite: MiniHw, target: str = None, task_name: str = None) -> bool:
+def _build_gcc(artifacts: Path, cwd: Path, suite: MiniHw, target: str = None,
+               task_name: str = None) -> bool:
     # Execute gcc
     def _build(task, src: Path, out):
         LOG.debug(f"[BUILD] GCC: {src} ~> {out}")
@@ -546,7 +551,7 @@ def _build_cmake(artifacts, cwd, suite, target: str = None, task_name: str = Non
         err_print_exec('cmake', cmake_res)
         return False
     # Execute make
-    #make_args = extract_make_help(cwd, target, task_name)
+    # make_args = extract_make_help(cwd, target, task_name)
     make_res = execute_cmd(
         "make", args=['-k'], cwd=cwd, ws=artifacts
     )
@@ -643,7 +648,9 @@ def _result_fmt(res: '_AnyResult', colored: bool = True) -> str:
 
 
 def print_suite_result(suite_res: 'MiniHwResult', colored: bool = True):
-    def _f(x): return _result_fmt(x, colored=colored)
+    def _f(x):
+        return _result_fmt(x, colored=colored)
+
     print(_f(suite_res))
     passed_tasks = 0
     for task in suite_res.tasks:
@@ -656,7 +663,9 @@ def print_suite_result(suite_res: 'MiniHwResult', colored: bool = True):
                 if check.is_fail:
                     print(check.fail_msg())
 
-    print(f"\n>>> OVERALL RESULT: {_get_result(suite_res, colored)} (passed {passed_tasks} out of {len(suite_res.tasks)} total tasks)")
+    print(
+        f"\n>>> OVERALL RESULT: {_get_result(suite_res, colored)} (passed {passed_tasks} out of {len(suite_res.tasks)} total tasks)")
+
 
 def _get_result(res: '_AnyResult', colored: bool):
     if not colored:
@@ -667,10 +676,8 @@ def _get_result(res: '_AnyResult', colored: bool):
 
     if res.is_skip():
         return tcolors.warn("SKIP")
-    
-    return tcolors.passed("PASS")
 
-        
+    return tcolors.passed("PASS")
 
 
 def dump_junit_report(suite_res: 'MiniHwResult', artifacts: Path):
@@ -724,7 +731,7 @@ def _load_logger(level: str = 'INFO'):
             },
         },
         'loggers': {
-            'minihw': {
+            APP_NAME: {
                 'handlers': ['console'],
                 'level': level,
             }
@@ -740,7 +747,7 @@ def _load_logger(level: str = 'INFO'):
 
 
 def parse_cli_args():
-    parser = argparse.ArgumentParser("minihw")
+    parser = argparse.ArgumentParser(APP_NAME)
     parser.set_defaults(func=None)
     parser.add_argument("-L", "--log-level", type=str,
                         help="Set log level (DEBUG|INFO|WARNING|ERROR)", default='ERROR')
@@ -779,7 +786,7 @@ def parse_cli_args():
     sub_exe.add_argument("-t", "--task", type=str,
                          help="Select task to be executed", default=None)
     sub_exe.add_argument('--build-type', type=str,
-                         help="Build type (cmake|gcc)", default='cmake')    
+                         help="Build type (cmake|gcc)", default='cmake')
     sub_exe.add_argument('--no-color', action='store_true',
                          help="Disable colored output", default=False)
     sub_exe.set_defaults(func=cli_exec)
@@ -788,7 +795,7 @@ def parse_cli_args():
 
 def cli_parse(args):
     path = Path(args.location).resolve()
-    LOG.info(f"Parsing the minihw ({path.name}) at location {path}")
+    LOG.info(f"Parsing the {APP_NAME} ({path.name}) at location {path}")
     suite = MiniHw(path)
     print_suite(suite)
     return True
@@ -798,16 +805,17 @@ def cli_build(args):
     path = Path(args.location).resolve()
     artifacts = get_artifacts(args.artifacts)
     LOG.info(
-        f"Building the minihw ({path.name}) at location {path}; artifacts: {artifacts}")
+        f"Building the {APP_NAME} ({path.name}) at location {path}; artifacts: {artifacts}")
     suite = MiniHw(path)
-    return build_suite(suite, clean=args.clean, build=True, artifacts=artifacts, build_type=args.build_type)
+    return build_suite(suite, clean=args.clean, build=True, artifacts=artifacts,
+                       build_type=args.build_type)
 
 
 def cli_exec(args):
     path = Path(args.location).resolve()
     artifacts = get_artifacts(args.artifacts)
     LOG.info(
-        f"Executing the minihw ({path.name}) at location {path}; artifacts: {artifacts}")
+        f"Executing the {APP_NAME} ({path.name}) at location {path}; artifacts: {artifacts}")
     suite = MiniHw(path)
     if not build_suite(
             suite,
@@ -826,7 +834,7 @@ def cli_exec(args):
         no_skip=True,
     )
     print()
-    print_suite_result(suite_res, colored = not args.no_color)
+    print_suite_result(suite_res, colored=not args.no_color)
     dump_junit_report(suite_res, artifacts)
     return True
 
@@ -845,7 +853,7 @@ def main():
 
 def get_artifacts(value: str, name: str = None) -> Path:
     if not value:
-        return Path(tempfile.mkdtemp(prefix=f"minihw-{name}"))
+        return Path(tempfile.mkdtemp(prefix=f"{APP_NAME}-{name}"))
     return ((Path(value) / name) if name else Path(value)).resolve()
 
 
