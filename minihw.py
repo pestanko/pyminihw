@@ -12,6 +12,9 @@ from typing import Callable, List, Dict, Set, Optional, Any
 from pathlib import Path
 
 APP_NAME = "minihw"
+APP_DESC = """
+Tool to test the Mini homeworks to PB071
+"""
 
 LOG = logging.getLogger(APP_NAME)
 
@@ -747,7 +750,7 @@ def _load_logger(level: str = 'INFO'):
 
 
 def parse_cli_args():
-    parser = argparse.ArgumentParser(APP_NAME)
+    parser = argparse.ArgumentParser(APP_NAME, description=APP_DESC)
     parser.set_defaults(func=None)
     parser.add_argument("-L", "--log-level", type=str,
                         help="Set log level (DEBUG|INFO|WARNING|ERROR)", default='ERROR')

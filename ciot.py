@@ -719,7 +719,7 @@ def make_cli_parser() -> argparse.ArgumentParser:
                          help='Location of the testing outputs/artifacts',
                          default=None)
 
-    parser = argparse.ArgumentParser(APP_NAME)
+    parser = argparse.ArgumentParser(APP_NAME, description=APP_DESC)
     parser.set_defaults(func=None)
     parser.add_argument("-L", "--log-level", type=str,
                         help="Set log level (DEBUG|INFO|WARNING|ERROR)", default='ERROR')
