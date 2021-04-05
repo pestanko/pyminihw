@@ -24,14 +24,19 @@ LOG = logging.getLogger(APP_NAME)
 GLOBAL_TIMEOUT = 10 * 60
 FILE_EXTENSIONS = ('in', 'out', 'err', 'files', 'args')
 
+
 ##
 # Definitions
 ##
+class AsDict:
+    def as_dict(self) -> Dict:
+        return dict_serialize(self, as_dict_skip=True)
+
 
 GeneralDefType = TypeVar('GeneralDefType', bound='GeneralDef')
 
 
-class GeneralDef:
+class GeneralDef(AsDict):
     """General definition - common base of all definitions"""
 
     def __init__(self, name: str, desc: str = None):
@@ -58,6 +63,10 @@ class TestDef(GeneralDef):
         self.env: Dict[str, Any] = env
         self.unit = unit
 
+    def as_dict(self) -> Dict:
+        items = {k: v for k, v in self.__dict__.items() if k not in ('unit',)}
+        return dict_serialize(items)
+
 
 class CheckDef(GeneralDef):
     def __init__(self, name: str, desc: str = None, assertion: 'Assertion' = None):
@@ -65,7 +74,7 @@ class CheckDef(GeneralDef):
         self.assertion = assertion
 
 
-class Assertion:
+class Assertion(AsDict):
     def __init__(self, kind: str, params: Dict[str, Any]):
         self.kind = kind
         self.params = params
@@ -94,7 +103,7 @@ class UnitFileDefinitionParser:
 
         unit_definition = UnitDef(name=unit_df['name'], desc=unit_df.get('desc'))
         for test_df in df['tests']:
-            parsed = self.parse_test_def(unit_df, test_df)
+            parsed = self.parse_test_def(unit_definition, test_df)
             unit_definition.tests.extend(parsed)
 
         return unit_definition
@@ -134,36 +143,33 @@ class UnitFileDefinitionParser:
         checks = []
         stdout = df.get('out', df.get('stdout'))
         if stdout is not None:
-            assertion = Assertion(
-                FileAssertionRunner.NAME,
-                dict(selector="@stdout", expected=self.data_dir / stdout)
-            )
-            checks.append(CheckDef("stdout_check", "Check the command STDOUT", assertion))
+            checks.append(self._file_assertion("@stdout", stdout))
 
         stderr = df.get('err', df.get('stderr'))
         if stderr is not None:
-            assertion = Assertion(
-                FileAssertionRunner.NAME,
-                dict(selector="@stderr", expected=self.data_dir / stderr)
-            )
-            checks.append(CheckDef("stderr_check", "Check the command STDERR", assertion))
+            checks.append(self._file_assertion("@stderr", stderr))
 
-        exit_code = df.get('exit', df.get('exit_code'))
+        exit_code = df.get('exit', df.get('exit_code', 0))
         if exit_code is not None:
-            assertion = Assertion(ExitCodeAssertionRunner.NAME, dict(exit_code=exit_code))
+            assertion = Assertion(ExitCodeAssertionRunner.NAME, dict(expected=exit_code))
             checks.append(CheckDef("exit_check", "Check the command exit code (main return value)",
                                    assertion))
 
         files = df.get('files')
         if files is not None and isinstance(files, dict):
             for prov, exp in files.items():
-                assertion = Assertion(
-                    FileAssertionRunner.NAME,
-                    dict(selector=prov, expected=self.data_dir / exp)
-                )
-                checks.append(CheckDef("file_check", "Check the file content", assertion))
+                check = self._file_assertion(prov, exp)
+                checks.append(check)
 
         return checks
+
+    def _file_assertion(self, selector: str, value):
+        assertion = Assertion(
+            FileAssertionRunner.NAME,
+            dict(selector=selector, expected=self.data_dir / value)
+        )
+        check = CheckDef("file_check", f"Check the file content [{selector}]", assertion)
+        return check
 
 
 ##
@@ -188,7 +194,7 @@ class ResultKind(enum.Enum):
 GeneralResultType = TypeVar('GeneralResultType', bound='GeneralResult')
 
 
-class GeneralResult:
+class GeneralResult(AsDict):
     @classmethod
     def mk_fail(cls, df: 'GeneralDefType', message: str) -> 'GeneralResultType':
         return cls(df, kind=ResultKind.FAIL, message=message)
@@ -211,10 +217,19 @@ class UnitRunResult(GeneralResult):
     def __init__(self, df: 'UnitDef'):
         super().__init__(df)
 
+    @property
+    def tests(self) -> List['TestRunResult']:
+        return self.sub_results
+
 
 class TestRunResult(GeneralResult):
     def __init__(self, df: 'TestDef'):
         super().__init__(df)
+        self.cmd_result: Optional['CommandResult'] = None
+
+    @property
+    def checks(self) -> List['CheckResult']:
+        return self.sub_results
 
 
 class CheckResult(GeneralResult):
@@ -226,18 +241,40 @@ class CheckResult(GeneralResult):
         self.diff = diff
         self.detail: Optional[Dict[str, Any]] = detail
 
+    def fail_msg(self, fill: str = ""):
+        result = ""
+        if self.message:
+            result += f"{fill}Message: {self.message}\n"
+
+        if self.expected is not None:
+            result += f"{fill}Expected: {self.expected}\n"
+
+        if self.provided is not None:
+            result += f"{fill}Provided: {self.provided}\n"
+
+        if self.diff is not None:
+            result += f"{fill}Diff: {self.diff}\n"
+
+        if self.detail:
+            result += f"{fill}Detail: {self.detail}\n"
+        return result
+
 
 class DefinitionRunner:
-    def __init__(self, paths: 'Paths'):
+    def __init__(self, paths: 'AppConfig'):
         self.paths = paths
         self.assertion_runners = AssertionRunners.instance()
 
-    def run_definition(self, unit_df: UnitDef) -> 'UnitRunResult':
-        LOG.info(f"[RUN] Running the suite: {unit_df.name}")
+    def run_unit(self, unit_df: UnitDef) -> 'UnitRunResult':
+        LOG.info(f"[RUN] Running the unit: {unit_df.name}")
         unit_result = UnitRunResult(unit_df)
         unit_ws = self.paths.unit_workspace(unit_df.name)
+        LOG.debug(f"[RUN] Creating unit workspace: {unit_ws}")
         for test_df in unit_df.tests:
-            unit_result.add_subresult(self.run_test(test_df, unit_ws))
+            test_result = self.run_test(test_df, unit_ws)
+            LOG.debug(f"[RUN] Test [{test_df.name}] result: {test_result.kind}")
+            unit_result.add_subresult(test_result)
+        LOG.debug(f"[RUN] Unit result: {unit_result.kind} ")
         return unit_result
 
     def run_test(self, test_df: 'TestDef', unit_ws: Path) -> 'TestRunResult':
@@ -245,16 +282,20 @@ class DefinitionRunner:
         test_result = TestRunResult(test_df)
 
         try:
-            cmd = str(self.paths.binary)
+            cmd = str(self.paths.command)
             cmd_res = execute_cmd(cmd,
                                   args=test_df.args,
                                   stdin=test_df.stdin,
                                   nm=test_df.name,
                                   env=test_df.env,
                                   ws=unit_ws)
+            test_result.cmd_result = cmd_res
             ctx = TestCtx(self.paths, test_df, cmd_res)
             for check_df in test_df.checks:
-                test_result.add_subresult(self.run_check(ctx, check_df))
+                check_result = self.run_check(ctx, check_df)
+                LOG.debug(f"[RUN] Check {check_df.name} for"
+                          f" test [{test_df.name}] result: {check_result.kind}")
+                test_result.add_subresult(check_result)
             return test_result
         except Exception as e:
             LOG.error("Execution failed: ", e)
@@ -274,7 +315,7 @@ class DefinitionRunner:
 
 
 class TestCtx:
-    def __init__(self, paths: 'Paths', test_df: 'TestDef', cmd_res: 'CommandResult'):
+    def __init__(self, paths: 'AppConfig', test_df: 'TestDef', cmd_res: 'CommandResult'):
         self.paths = paths
         self.test_df = test_df
         self.cmd_res = cmd_res
@@ -455,7 +496,7 @@ def execute_cmd(cmd: str, args: List[str], ws: Path, stdin: Optional[Path] = Non
     )
 
 
-class CommandResult:
+class CommandResult(AsDict):
     def __init__(self, exit_code: int, stdout: Path, stderr: Path, elapsed: int):
         self.exit = exit_code
         self.stdout = stdout
@@ -471,15 +512,177 @@ class CommandResult:
         }
 
 
+def dict_serialize(obj, as_dict_skip: bool = False) -> Any:
+    if obj is None or isinstance(obj, str) or isinstance(obj, int):
+        return obj
+    if isinstance(obj, list):
+        return [dict_serialize(i) for i in obj]
+
+    if isinstance(obj, set):
+        return {dict_serialize(i) for i in obj}
+
+    if isinstance(obj, dict):
+        return {k: dict_serialize(v) for k, v in obj.items()}
+
+    if isinstance(obj, enum.Enum):
+        return obj.value
+
+    if not as_dict_skip and isinstance(obj, AsDict):
+        return obj.as_dict()
+
+    if hasattr(obj, '__dict__'):
+        return {k: dict_serialize(v) for k, v in obj.__dict__.items()}
+
+    if isinstance(obj, Path):
+        return str(obj)
+
+    return str(obj)
+
+
 ##
 # Main CLI
 ##
 
+# Printers
 
-class Paths:
-    def __init__(self, binary: Path, tests_dir: Path, data_dir: Path = None,
+COLORS = ('black', 'red', 'green', 'yellow', 'blue', 'magenta', 'cyan', 'white')
+
+
+def _clr_index(name: str) -> int:
+    try:
+        return COLORS.index(name.lower())
+    except Exception:
+        return 7
+
+
+def _clr(name: str, bright: bool = False):
+    prefix = '\033['
+    name = name.lower()
+    if name == 'end':
+        return f'{prefix}0m'
+    if name == 'bold':
+        return f'{prefix}1m'
+    if name == 'underline':
+        return f'{prefix}4m'
+    mode = '9' if bright else '3'
+    return f'{prefix}{mode}{_clr_index(name)}m'
+
+
+class tcolors:
+    BLUE = '\033[34m'
+    CYAN = _clr('cyan')
+    GREEN = _clr('green')
+    MAGENTA = _clr('magenta')
+    YELLOW = _clr('yellow')
+    RED = _clr('red')
+    ENDC = _clr('end')
+    BOLD = _clr('bold')
+    UNDERLINE = _clr('underline')
+
+    def __init__(self, colors: bool = True):
+        self._colors = colors
+
+    def fail(self, s: str) -> str:
+        return self.wrap(self.RED, s)
+
+    def passed(self, s: str) -> str:
+        return self.wrap(self.GREEN, s)
+
+    def warn(self, s: str) -> str:
+        return self.wrap(self.YELLOW, s)
+
+    def head(self, s: str) -> str:
+        return self.wrap(self.MAGENTA, s)
+
+    def wrap(self, color_prefix: str, s: str) -> str:
+        if not self._colors:
+            return s
+        return f"{color_prefix}{s}{self.ENDC}"
+
+
+def print_unit_df(df: 'UnitDef', colors: bool = True):
+    tc = tcolors(colors)
+    print(f"UNIT: [{tc.wrap(tc.GREEN, df.name)}]", f":: {df.desc}")
+    for test in df.tests:
+        print(
+            f"- Test: [{tc.wrap(tc.CYAN, test.name)}] :: {test.desc} (Checks: {len(test.checks)})")
+        for check in test.checks:
+            print(
+                f"\t * Check: [{tc.wrap(tc.MAGENTA, check.name)}] :: {check.desc} "
+                f"[kind={check.assertion.kind}]"
+            )
+
+
+def print_unit_result(unit_res: 'UnitRunResult', with_checks: bool = False, colors: bool = True):
+    tc = tcolors(colors)
+
+    def _prk(r: 'GeneralResultType'):
+        color = tc.RED if r.kind.is_fail() else tc.GREEN
+        return tc.wrap(color, f"[{r.kind.value.upper()}]")
+
+    def _p(r: 'GeneralResultType'):
+        return f"{_prk(r)} ({r.df.name}) :: {r.df.desc}"
+
+    print(_p(unit_res))
+    for test_res in unit_res.tests:
+        print(f"- {_p(test_res)}")
+        if test_res.kind.is_fail():
+            if test_res.message:
+                print(f"\t Message: {test_res.message}")
+        if test_res.kind.is_pass() and not with_checks:
+            continue
+        for ch_res in test_res.checks:
+            if ch_res.kind.is_fail() or with_checks:
+                print(f"\t* {_p(ch_res)}")
+
+            if ch_res.kind.is_pass():
+                continue
+
+            print(ch_res.fail_msg("\t\t[info] "))
+
+    print(f"\n\nOVERALL RESULT: {_prk(unit_res)}\n")
+
+
+def dump_junit_report(unit_res: 'UnitRunResult', artifacts: Path) -> Path:
+    try:
+        import junitparser
+    except ImportError:
+        LOG.warning("No JUNIT generated - junit parser is not installed")
+        return None
+    report_path = artifacts / 'junit_report.xml'
+    LOG.info(f"[REPORT] Generating JUNIT report: {report_path}")
+    suites = junitparser.JUnitXml()
+    unit_suite = junitparser.TestSuite(name=unit_res.df.name)
+    for test_res in unit_res.tests:
+        junit_case = junitparser.TestCase(
+            name=test_res.df.desc,
+            classname=test_res.df.unit.name + '/' + test_res.df.name,
+            time=test_res.cmd_result.elapsed / 1000000.0 if test_res.cmd_result else 0
+        )
+        if test_res.kind.is_pass():
+            continue
+        fails = []
+        for c in test_res.checks:
+            fail = junitparser.Failure(c.message)
+            fail.text = "\n" + c.fail_msg()
+            fails.append(fail)
+        junit_case.result = fails
+        if test_res.cmd_result:
+            junit_case.system_out = str(test_res.cmd_result.stdout)
+            junit_case.system_err = str(test_res.cmd_result.stderr)
+        unit_suite.add_testcase(junit_case)
+    suites.add_testsuite(unit_suite)
+    suites.write(str(report_path))
+    return report_path
+
+
+## App config
+
+class AppConfig(AsDict):
+    def __init__(self, command: str, tests_dir: Path, data_dir: Path = None,
                  artifacts: Path = None):
-        self.binary: Path = Path(binary)
+        tests_dir = Path(tests_dir) if tests_dir else Path.cwd()
+        self.command: str = command
         self.tests_dir: Path = Path(tests_dir)
         self.data_dir: Path = Path(data_dir) if data_dir else _resolve_data_dir(tests_dir)
         self.artifacts: Path = Path(artifacts) if artifacts else _make_artifacts_dir()
@@ -498,38 +701,86 @@ def _resolve_data_dir(test_dir: Path) -> Path:
 
 
 def _make_artifacts_dir() -> Path:
-    return Path(tempfile.mkdtemp(prefix=APP_NAME))
+    return Path(tempfile.mkdtemp(prefix=APP_NAME + "-"))
 
 
 def make_cli_parser() -> argparse.ArgumentParser:
+    def _locations(sub):
+        sub.add_argument('-C', '--command', type=str,
+                         help="Location of the command/binary you would like to test")
+        sub.add_argument('-U', '--unit', type=str,
+                         help='Location of the unit/test definition file')
+        sub.add_argument('-T', '--test-files', type=str, help='Location of the test files',
+                         default='tests')
+        sub.add_argument('-D', '--test-data-files', type=str,
+                         help='Location of the test data files',
+                         default=None)
+        sub.add_argument('-A', '--artifacts', type=str,
+                         help='Location of the testing outputs/artifacts',
+                         default=None)
+
     parser = argparse.ArgumentParser(APP_NAME)
     parser.set_defaults(func=None)
     parser.add_argument("-L", "--log-level", type=str,
                         help="Set log level (DEBUG|INFO|WARNING|ERROR)", default='ERROR')
-    sub = parser.add_subparsers(title="Sub-Commands")
+    subs = parser.add_subparsers(title="Sub-Commands")
     # Parse
-    sub_parse = sub.add_parser("parse", help="Parse and print the mini hw scenario")
-    sub_parse.add_argument('location', type=str, help='Location of the unit file')
-    sub_parse.add_argument('-T', '--test-files', type=str, help='Location of the test files',
-                           default='tests')
-    sub_parse.add_argument('-D', '--test-data-files', type=str,
-                           help='Location of the test data files',
-                           default=None)
+    sub_parse = subs.add_parser("parse", help="Parse and print the mini hw scenario")
+    sub_parse.add_argument("-o", "--output", help="Output format (console|json)", default="console")
+    _locations(sub_parse)
     sub_parse.set_defaults(func=cli_parse)
 
     # Exec
+    sub_exec = subs.add_parser("exec", help="Execute the unit file")
+    _locations(sub_exec)
+    sub_exec.set_defaults(func=cli_exec)
     return parser
 
 
 def cli_parse(args):
-    unit_file = Path(args.location)
-    tests_dir = Path(args.test_files)
-    data_dir = args.test_data_files
-    paths = Paths(tests_dir=tests_dir, data_dir=data_dir, binary=Path("/usr/bin/echo"))
-    parser = UnitFileDefinitionParser(paths.tests_dir, data_dir=paths.data_dir)
+    cfg = _get_app_cfg(args)
+    unit_file = Path(args.unit)
+    parser = UnitFileDefinitionParser(cfg.tests_dir, data_dir=cfg.data_dir)
     unit_df = parser.parse_unit(unit_file)
-    print(dump_json(unit_df))
+    if args.output in ['json', 'j']:
+        print(dump_json(unit_df))
+    else:
+        print_unit_df(unit_df)
     return True
+
+
+def _get_app_cfg(args):
+    tests_dir = args.test_files
+    data_dir = args.test_data_files
+    artifacts = args.artifacts
+    app_cfg = AppConfig(
+        tests_dir=tests_dir,
+        data_dir=data_dir,
+        command=args.command,
+        artifacts=artifacts
+    )
+    LOG.debug(f"[PATHS] Binary: {app_cfg.command}")
+    LOG.debug(f"[PATHS] Test dir: {app_cfg.tests_dir}")
+    LOG.debug(f"[PATHS] Test data dir: {app_cfg.data_dir}")
+    LOG.debug(f"[PATHS] Artifacts: {app_cfg.artifacts}")
+    return app_cfg
+
+
+def cli_exec(args):
+    cfg = _get_app_cfg(args)
+    unit_file = Path(args.unit)
+    parser = UnitFileDefinitionParser(cfg.tests_dir, data_dir=cfg.data_dir)
+    unit_df = parser.parse_unit(unit_file)
+    runner = DefinitionRunner(cfg)
+    result = runner.run_unit(unit_df)
+    print_unit_result(result)
+    ws = cfg.unit_workspace(unit_df.name)
+    print(f"UNIT WORKSPACE: {ws}")
+    report = dump_junit_report(unit_res=result, artifacts=ws)
+    if report:
+        print(f"JUNIT REPORT: {report}")
+
+    return result.kind.is_pass()
 
 
 def main():
@@ -541,11 +792,13 @@ def main():
         parser.print_help()
         return
     if not args.func(args):
-        print("Execution failed!")
+        print("\nExecution failed!")
 
 
 def dump_json(obj, indent=4):
     def _dumper(x):
+        if isinstance(x, AsDict):
+            return x.as_dict()
         if isinstance(x, Path):
             return str(x)
         return x.__dict__
