@@ -839,19 +839,21 @@ def cli_exec(args):
     print()
     print_suite_result(suite_res, colored=not args.no_color)
     dump_junit_report(suite_res, artifacts)
-    return True
+    return suite_res.is_pass()
 
 
-def main():
+def main() -> int:
     parser = parse_cli_args()
     args = parser.parse_args()
     _load_logger(args.log_level)
     LOG.debug(f"Parsed args: {args} ")
     if not args.func:
         parser.print_help()
-        return
+        return 0
     if not args.func(args):
         print("Execution failed!")
+        return 1
+    return 0
 
 
 def get_artifacts(value: str, name: str = None) -> Path:
@@ -861,4 +863,6 @@ def get_artifacts(value: str, name: str = None) -> Path:
 
 
 if __name__ == "__main__":
-    main()
+    status = main()
+    import sys
+    sys.exit(status)
